@@ -2,6 +2,7 @@ import datetime as dt
 from typing import List, Tuple
 import xml.etree.ElementTree as ET
 
+import altair as alt
 import pandas as pd
 import requests
 import streamlit as st
@@ -24,6 +25,45 @@ EIC_CODES = {
     "SI": "10YSI-ELES-----O",
     "SK": "10YSK-SEPS-----K",
 }
+
+def render_hourly_heatmap(values: pd.Series, title: str) -> None:
+    heatmap_df = pd.DataFrame(
+        {
+            "hour": list(range(24)),
+            "value": [float(values.iloc[hour]) for hour in range(24)],
+        }
+    )
+    heatmap_df["hour_label"] = heatmap_df["hour"].map(lambda x: f"{x:02d}:00")
+
+    chart = (
+        alt.Chart(heatmap_df)
+        .mark_rect()
+        .encode(
+            x=alt.X("hour_label:N", title="Stunde"),
+            y=alt.Y("metric:N", title=None),
+            color=alt.Color("value:Q", title=title, scale=alt.Scale(scheme="yelloworangered")),
+            tooltip=[
+                alt.Tooltip("hour_label:N", title="Stunde"),
+                alt.Tooltip("value:Q", title=title, format=".2f"),
+            ],
+        )
+        .transform_calculate(metric=f"'{title}'")
+        .properties(height=90)
+    )
+    st.altair_chart(chart, width="stretch")
+
+@st.cache_data(ttl=3600)
+def fetch_available_jao_hubs() -> List[str]:
+    end_date = dt.date.today() - dt.timedelta(days=2)
+    start_date = end_date - dt.timedelta(days=1)
+    frame = fetch_jao_endpoint(
+        "netPos",
+        dt.datetime.combine(start_date, dt.time.min),
+        dt.datetime.combine(end_date, dt.time.max),
+    )
+    hub_columns = [col for col in frame.columns if col.startswith("hub_")]
+    hubs = [col.replace("hub_", "") for col in hub_columns]
+    return sorted(set(hubs))
 
 
 @st.cache_data(ttl=3600)
@@ -212,6 +252,7 @@ if load_clicked:
     st.session_state.start = start_date
     st.session_state.end = end_date
     st.session_state.countries = countries
+    st.session_state.jao_hubs = jao_hubs
     st.session_state.entsoe_key = entsoe_key
 
 if start_date > end_date:
@@ -226,6 +267,8 @@ if st.session_state.get("load_data"):
         netpos_raw = load_jao_data("netPos", start_date, end_date, NETPOS_CHUNK_DAYS)
         shadow_raw = load_jao_data("shadowPrices", start_date, end_date, SHADOW_CHUNK_DAYS)
         netpos = transform_net_positions(netpos_raw)
+        if not netpos.empty and st.session_state.get("jao_hubs"):
+            netpos = netpos[netpos["hub"].isin(st.session_state.get("jao_hubs", []))]
         shadow = normalize_shadow_prices(shadow_raw)
         prices = fetch_entsoe_prices(entsoe_key, start_date, end_date, countries)
     st.session_state.netpos = netpos
@@ -311,6 +354,65 @@ with tab_cnec:
         if not top_cnecs.empty:
             st.bar_chart(top_cnecs.set_index("cnec_name")["sum_eur"])
 
+        st.subheader("Heatmap: Durchschnittliche Engpässe je Stunde")
+        st.caption(
+            "Die Heatmap zeigt den Tagesverlauf der bindenden CNECs (Shadow Price > 0)."
+        )
+
+        binding = binding.copy()
+        binding["hour"] = binding["datetime"].dt.hour
+        metric_options = {
+            "Ø Shadow Price (€/MWh)": "avg_shadow_price",
+            "Anzahl bindender CNECs": "binding_count",
+            "Summe Shadow Price (€/MWh)": "sum_shadow_price",
+        }
+        selected_metric = st.selectbox(
+            "Kennzahl für Heatmap",
+            options=list(metric_options.keys()),
+            key="heatmap_metric",
+        )
+        hourly_summary = (
+            binding.groupby("hour")
+            .agg(
+                avg_shadow_price=("shadow_price", "mean"),
+                binding_count=("cnec_name", "count"),
+                sum_shadow_price=("shadow_price", "sum"),
+            )
+            .reindex(range(24), fill_value=0)
+        )
+        metric_series = hourly_summary[metric_options[selected_metric]]
+        render_hourly_heatmap(metric_series, selected_metric)
+
+        st.subheader("CNECs je Stunde")
+        hour_choice = st.selectbox(
+            "Stunde für Detailansicht",
+            options=[f"{hour:02d}:00" for hour in range(24)],
+            key="cnec_hour_detail",
+        )
+        selected_hour = int(hour_choice.split(":")[0])
+        hourly_cnecs = (
+            binding[binding["hour"] == selected_hour]
+            .groupby(["cnec_name", "tso"], as_index=False)
+            .agg(
+                avg_shadow_price=("shadow_price", "mean"),
+                max_shadow_price=("shadow_price", "max"),
+                binding_hours=("shadow_price", "count"),
+            )
+            .sort_values("avg_shadow_price", ascending=False)
+        )
+        if hourly_cnecs.empty:
+            st.info("Für diese Stunde sind keine bindenden CNECs vorhanden.")
+        else:
+            st.dataframe(hourly_cnecs, width="stretch")
+
+        st.subheader("Interaktive Stunden-Analyse (Datum + Stunde)")
+        shadow_dates = shadow["datetime"].dt.date.dropna().unique().tolist()
+        if shadow_dates:
+            selected_date = st.selectbox("Datum", options=shadow_dates)
+            selected_hour_label = st.selectbox(
+                "Stunde", options=[f"{hour:02d}:00" for hour in range(24)]
+            )
+            hour_value = int(selected_hour_label.split(":")[0])
         shadow_dates = shadow["datetime"].dt.date.dropna().unique().tolist()
         if shadow_dates:
             selected_date = st.selectbox("Datum", options=shadow_dates)
@@ -324,6 +426,7 @@ with tab_cnec:
                 & (shadow["shadow_price"] > 0)
             ]
             display_cols = ["datetime", "cnec_name", "shadow_price", "tso"]
+            st.dataframe(filtered[display_cols], width="stretch")
             st.dataframe(filtered[display_cols])
 
 with tab_prices:
@@ -350,6 +453,67 @@ with tab_prices:
             spread = spread.drop(columns=["AT"], errors="ignore")
             st.subheader("Preisspreads zu Österreich")
             st.line_chart(spread)
+
+        st.subheader("Korrelation: Nettoposition vs. DE-AT Preisspread")
+        if "AT" not in pivot.columns or "DE_LU" not in pivot.columns:
+            st.info("Für die Korrelation werden Preisdaten für AT und DE_LU benötigt.")
+        elif netpos.empty:
+            st.info("Keine Nettopositionsdaten für die gewählten JAO-Hubs verfügbar.")
+        else:
+            spread_de_at = (pivot["DE_LU"] - pivot["AT"]).rename("spread_de_at")
+            netpos_wide = netpos.pivot_table(
+                index="datetime", columns="hub", values="net_position", aggfunc="mean"
+            )
+            merged = netpos_wide.join(spread_de_at, how="inner").dropna(subset=["spread_de_at"])
+
+            corr_rows = []
+            min_points = 24
+            for hub in netpos_wide.columns:
+                pair = merged[[hub, "spread_de_at"]].dropna()
+                if pair.shape[0] < min_points:
+                    continue
+                corr_rows.append(
+                    {
+                        "hub": hub,
+                        "correlation": pair[hub].corr(pair["spread_de_at"]),
+                        "points": pair.shape[0],
+                    }
+                )
+
+            corr_df = pd.DataFrame(corr_rows).sort_values(
+                "correlation", ascending=False
+            ) if corr_rows else pd.DataFrame()
+
+            if corr_df.empty:
+                st.info("Nicht genug gemeinsame Datenpunkte für eine belastbare Korrelation (mind. 24).")
+            else:
+                st.dataframe(corr_df, width="stretch")
+                st.bar_chart(corr_df.set_index("hub")["correlation"])
+
+                selected_hub = st.selectbox(
+                    "Hub für Scatter-Analyse",
+                    options=corr_df["hub"].tolist(),
+                    key="correlation_hub",
+                )
+                scatter_df = merged[[selected_hub, "spread_de_at"]].dropna().rename(
+                    columns={selected_hub: "net_position"}
+                )
+                scatter_chart = (
+                    alt.Chart(scatter_df)
+                    .mark_circle(size=35, opacity=0.6)
+                    .encode(
+                        x=alt.X("net_position:Q", title=f"Nettoposition {selected_hub} (MW)"),
+                        y=alt.Y("spread_de_at:Q", title="DE-AT Spread (€/MWh)"),
+                        tooltip=[
+                            alt.Tooltip("net_position:Q", format=".2f"),
+                            alt.Tooltip("spread_de_at:Q", format=".2f"),
+                        ],
+                    )
+                )
+                trend_line = scatter_chart.transform_regression(
+                    "net_position", "spread_de_at"
+                ).mark_line(color="red")
+                st.altair_chart(scatter_chart + trend_line, width="stretch")
 
 with tab_export:
     st.subheader("Datenexport")
