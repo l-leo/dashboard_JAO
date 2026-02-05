@@ -240,6 +240,26 @@ with st.sidebar:
         type="password",
         value=st.session_state.get("entsoe_key", DEFAULT_ENTSOE_KEY),
     )
+
+    try:
+        jao_hub_options = fetch_available_jao_hubs()
+    except requests.RequestException as exc:
+        st.warning(f"JAO-Hub-Liste konnte nicht geladen werden: {exc}")
+        jao_hub_options = ["AT", "DE", "CZ", "HU", "SI", "SK"]
+
+    default_hubs = st.session_state.get("jao_hubs", ["AT", "DE"])
+    default_hubs = [hub for hub in default_hubs if hub in jao_hub_options]
+    if not default_hubs and jao_hub_options:
+        default_hubs = jao_hub_options[:2]
+
+    jao_hubs = st.multiselect(
+        "JAO-Länder/Hubs (Nettoposition)",
+        options=jao_hub_options,
+        default=default_hubs,
+    )
+
+    countries = st.multiselect(
+        "Preis-Länder (ENTSO-E)",
     countries = st.multiselect(
         "Länder",
         options=list(EIC_CODES.keys()),
