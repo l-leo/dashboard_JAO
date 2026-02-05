@@ -240,26 +240,8 @@ with st.sidebar:
         type="password",
         value=st.session_state.get("entsoe_key", DEFAULT_ENTSOE_KEY),
     )
-
-    try:
-        jao_hub_options = fetch_available_jao_hubs()
-    except requests.RequestException as exc:
-        st.warning(f"JAO-Hub-Liste konnte nicht geladen werden: {exc}")
-        jao_hub_options = ["AT", "DE", "CZ", "HU", "SI", "SK"]
-
-    default_hubs = st.session_state.get("jao_hubs", ["AT", "DE"])
-    default_hubs = [hub for hub in default_hubs if hub in jao_hub_options]
-    if not default_hubs and jao_hub_options:
-        default_hubs = jao_hub_options[:2]
-
-    jao_hubs = st.multiselect(
-        "JAO-Länder/Hubs (Nettoposition)",
-        options=jao_hub_options,
-        default=default_hubs,
-    )
-
     countries = st.multiselect(
-        "Preis-Länder (ENTSO-E)",
+        "Länder",
         options=list(EIC_CODES.keys()),
         default=st.session_state.get("countries", ["AT", "DE_LU"]),
     )
@@ -431,6 +413,13 @@ with tab_cnec:
                 "Stunde", options=[f"{hour:02d}:00" for hour in range(24)]
             )
             hour_value = int(selected_hour_label.split(":")[0])
+        shadow_dates = shadow["datetime"].dt.date.dropna().unique().tolist()
+        if shadow_dates:
+            selected_date = st.selectbox("Datum", options=shadow_dates)
+            selected_hour = st.selectbox(
+                "Stunde", options=[f"{hour:02d}:00" for hour in range(24)]
+            )
+            hour_value = int(selected_hour.split(":")[0])
             filtered = shadow[
                 (shadow["datetime"].dt.date == selected_date)
                 & (shadow["datetime"].dt.hour == hour_value)
@@ -438,6 +427,7 @@ with tab_cnec:
             ]
             display_cols = ["datetime", "cnec_name", "shadow_price", "tso"]
             st.dataframe(filtered[display_cols], width="stretch")
+            st.dataframe(filtered[display_cols])
 
 with tab_prices:
     st.subheader("Day-Ahead Preise")
