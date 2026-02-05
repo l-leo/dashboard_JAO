@@ -260,6 +260,8 @@ with st.sidebar:
 
     countries = st.multiselect(
         "Preis-Länder (ENTSO-E)",
+    countries = st.multiselect(
+        "Länder",
         options=list(EIC_CODES.keys()),
         default=st.session_state.get("countries", ["AT", "DE_LU"]),
     )
@@ -431,6 +433,13 @@ with tab_cnec:
                 "Stunde", options=[f"{hour:02d}:00" for hour in range(24)]
             )
             hour_value = int(selected_hour_label.split(":")[0])
+        shadow_dates = shadow["datetime"].dt.date.dropna().unique().tolist()
+        if shadow_dates:
+            selected_date = st.selectbox("Datum", options=shadow_dates)
+            selected_hour = st.selectbox(
+                "Stunde", options=[f"{hour:02d}:00" for hour in range(24)]
+            )
+            hour_value = int(selected_hour.split(":")[0])
             filtered = shadow[
                 (shadow["datetime"].dt.date == selected_date)
                 & (shadow["datetime"].dt.hour == hour_value)
@@ -438,6 +447,7 @@ with tab_cnec:
             ]
             display_cols = ["datetime", "cnec_name", "shadow_price", "tso"]
             st.dataframe(filtered[display_cols], width="stretch")
+            st.dataframe(filtered[display_cols])
 
 with tab_prices:
     st.subheader("Day-Ahead Preise")
